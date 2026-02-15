@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -239,9 +240,10 @@ func peekSession(path string) (slug, firstPrompt string) {
 	}
 	defer f.Close() //nolint:errcheck
 
-	// Read first few KB to find user message
+	// Read first few KB to find user message.
+	// Use io.ReadAtLeast to handle slow/partial reads.
 	buf := make([]byte, 32*1024)
-	n, _ := f.Read(buf)
+	n, _ := io.ReadAtLeast(f, buf, 1)
 	if n == 0 {
 		return "", ""
 	}

@@ -14,6 +14,9 @@ import (
 	"github.com/sgnl-ai/cclog/internal/session"
 )
 
+// MaxPromptLen is the standard truncation length for prompt/title display.
+const MaxPromptLen = 60
+
 // ExportOpts configures an export operation.
 type ExportOpts struct {
 	SessionID  string
@@ -24,6 +27,7 @@ type ExportOpts struct {
 	Gist       bool
 	GistPublic bool
 	ClaudeDir  string // injectable; defaults to session.DefaultClaudeDir()
+	OutputDir  string // injectable; defaults to ~/cclog
 }
 
 // ExportResult contains the outcome of an export operation.
@@ -65,7 +69,10 @@ func ExportSession(opts ExportOpts) (*ExportResult, error) {
 	}
 
 	// Redact secrets
-	messages = RedactMessages(messages)
+	messages, err = RedactMessages(messages)
+	if err != nil {
+		return nil, fmt.Errorf("secret redaction: %w", err)
+	}
 
 	// Build title
 	title := BuildTitle(sess)
@@ -90,9 +97,15 @@ func ExportSession(opts ExportOpts) (*ExportResult, error) {
 	}
 
 	// Write output
-	outPath := OutputPath(sess.Slug, sess.ID, sess.Modified, ext)
-	outDir := filepath.Dir(outPath)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	outDir := opts.OutputDir
+	if outDir == "" {
+		outDir, err = DefaultOutputDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve output dir: %w", err)
+		}
+	}
+	outPath := outputPath(outDir, sess.Slug, sess.ID, sess.Modified, ext)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
 
@@ -144,13 +157,7 @@ func FormatSessionList(sessions []session.SessionInfo, limit int) string {
 
 	for i := 0; i < limit; i++ {
 		s := sessions[i]
-		prompt := s.FirstPrompt
-		if prompt == "" {
-			prompt = s.Summary
-		}
-		if len(prompt) > 60 {
-			prompt = prompt[:60] + "..."
-		}
+		prompt := TruncatePrompt(s.FirstPrompt, s.Summary, MaxPromptLen)
 
 		date := s.Modified.Format("2006-01-02 15:04")
 		project := filepath.Base(s.Project)
@@ -171,8 +178,8 @@ func BuildTitle(sess *session.SessionInfo) string {
 	}
 	if sess.FirstPrompt != "" {
 		title := sess.FirstPrompt
-		if len(title) > 60 {
-			title = title[:60] + "..."
+		if len(title) > MaxPromptLen {
+			title = title[:MaxPromptLen] + "..."
 		}
 		return title
 	}
@@ -182,14 +189,17 @@ func BuildTitle(sess *session.SessionInfo) string {
 	return "Claude Code Session"
 }
 
-// OutputDir returns the default output directory for exported files.
-func OutputDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "cclog")
+// DefaultOutputDir returns the default output directory for exported files.
+func DefaultOutputDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, "cclog"), nil
 }
 
-// OutputPath computes the full output file path from session metadata.
-func OutputPath(slug, sessionID string, modified time.Time, ext string) string {
+// outputPath computes the full output file path from session metadata.
+func outputPath(outDir, slug, sessionID string, modified time.Time, ext string) string {
 	s := slug
 	if s == "" && len(sessionID) >= 8 {
 		s = sessionID[:8]
@@ -198,23 +208,37 @@ func OutputPath(slug, sessionID string, modified time.Time, ext string) string {
 	if date == "0001-01-01" {
 		date = time.Now().Format("2006-01-02")
 	}
-	return filepath.Join(OutputDir(), s+"-"+date+ext)
+	return filepath.Join(outDir, s+"-"+date+ext)
 }
 
 // RedactMessages scans messages for secrets and replaces them with [REDACTED].
-func RedactMessages(messages []parser.Message) []parser.Message {
-	redactor, err := scanner.NewRedactor()
-	if err != nil {
-		return messages
+// Returns an error if the redactor cannot be initialized (security guarantee).
+func RedactMessages(messages []parser.Message) ([]parser.Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
 	}
 
-	for i := range messages {
-		messages[i].TextContent = redactor.Redact(messages[i].TextContent)
-		for j := range messages[i].ToolCalls {
-			messages[i].ToolCalls[j].Description = redactor.Redact(messages[i].ToolCalls[j].Description)
+	redactor, err := scanner.NewRedactor()
+	if err != nil {
+		return nil, fmt.Errorf("initialize secret scanner: %w", err)
+	}
+
+	// Copy to avoid mutating caller's slice.
+	out := make([]parser.Message, len(messages))
+	copy(out, messages)
+
+	for i := range out {
+		out[i].TextContent = redactor.Redact(out[i].TextContent)
+		if len(out[i].ToolCalls) > 0 {
+			tcs := make([]parser.ToolCall, len(out[i].ToolCalls))
+			copy(tcs, out[i].ToolCalls)
+			for j := range tcs {
+				tcs[j].Description = redactor.Redact(tcs[j].Description)
+			}
+			out[i].ToolCalls = tcs
 		}
 	}
-	return messages
+	return out, nil
 }
 
 // ApplyTextBoundaries filters messages by matching from/to text (case-insensitive).
@@ -227,8 +251,9 @@ func ApplyTextBoundaries(messages []parser.Message, fromText, toText string) []p
 	endIdx := len(messages)
 
 	if fromText != "" {
+		lower := strings.ToLower(fromText)
 		for i, msg := range messages {
-			if strings.Contains(strings.ToLower(msg.TextContent), strings.ToLower(fromText)) {
+			if strings.Contains(strings.ToLower(msg.TextContent), lower) {
 				startIdx = i
 				break
 			}
@@ -236,8 +261,9 @@ func ApplyTextBoundaries(messages []parser.Message, fromText, toText string) []p
 	}
 
 	if toText != "" {
+		lower := strings.ToLower(toText)
 		for i := len(messages) - 1; i >= startIdx; i-- {
-			if strings.Contains(strings.ToLower(messages[i].TextContent), strings.ToLower(toText)) {
+			if strings.Contains(strings.ToLower(messages[i].TextContent), lower) {
 				endIdx = i + 1
 				break
 			}
@@ -253,4 +279,17 @@ func ShortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// TruncatePrompt returns the first non-empty value (prompt or summary),
+// truncated to max characters.
+func TruncatePrompt(prompt, summary string, max int) string {
+	s := prompt
+	if s == "" {
+		s = summary
+	}
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }

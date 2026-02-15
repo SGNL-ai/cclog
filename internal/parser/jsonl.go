@@ -246,6 +246,20 @@ func parseMessage(msg Message, rawMsg json.RawMessage) (Message, bool, error) {
 	return msg, false, nil
 }
 
+// toolDescFields maps tool names to the JSON field and optional prefix used
+// for generating a human-readable description.
+var toolDescFields = map[string]struct {
+	field  string
+	prefix string
+}{
+	"Read":  {field: "file_path"},
+	"Write": {field: "file_path"},
+	"Edit":  {field: "file_path"},
+	"Grep":  {field: "pattern", prefix: "pattern: "},
+	"Glob":  {field: "pattern", prefix: "pattern: "},
+	"Task":  {field: "description"},
+}
+
 // extractToolDescription pulls a human-readable summary from tool input.
 func extractToolDescription(toolName string, input json.RawMessage) string {
 	if len(input) == 0 {
@@ -257,7 +271,7 @@ func extractToolDescription(toolName string, input json.RawMessage) string {
 		return ""
 	}
 
-	// For Bash, use the description field if present, else the command
+	// Bash is special: prefer description, fall back to command.
 	if toolName == "Bash" {
 		if desc, ok := fields["description"]; ok {
 			var s string
@@ -273,67 +287,17 @@ func extractToolDescription(toolName string, input json.RawMessage) string {
 		}
 	}
 
-	// For Read, show the file path
-	if toolName == "Read" {
-		if fp, ok := fields["file_path"]; ok {
+	// Table-driven lookup for all other tools.
+	if spec, ok := toolDescFields[toolName]; ok {
+		if raw, ok := fields[spec.field]; ok {
 			var s string
-			if json.Unmarshal(fp, &s) == nil {
-				return s
+			if json.Unmarshal(raw, &s) == nil && s != "" {
+				return spec.prefix + s
 			}
 		}
 	}
 
-	// For Write, show the file path
-	if toolName == "Write" {
-		if fp, ok := fields["file_path"]; ok {
-			var s string
-			if json.Unmarshal(fp, &s) == nil {
-				return s
-			}
-		}
-	}
-
-	// For Edit, show the file path
-	if toolName == "Edit" {
-		if fp, ok := fields["file_path"]; ok {
-			var s string
-			if json.Unmarshal(fp, &s) == nil {
-				return s
-			}
-		}
-	}
-
-	// For Grep, show the pattern
-	if toolName == "Grep" {
-		if pat, ok := fields["pattern"]; ok {
-			var s string
-			if json.Unmarshal(pat, &s) == nil {
-				return fmt.Sprintf("pattern: %s", s)
-			}
-		}
-	}
-
-	// For Glob, show the pattern
-	if toolName == "Glob" {
-		if pat, ok := fields["pattern"]; ok {
-			var s string
-			if json.Unmarshal(pat, &s) == nil {
-				return fmt.Sprintf("pattern: %s", s)
-			}
-		}
-	}
-
-	// For Task, show the description
-	if toolName == "Task" {
-		if desc, ok := fields["description"]; ok {
-			var s string
-			if json.Unmarshal(desc, &s) == nil {
-				return s
-			}
-		}
-	}
-
-	// Generic: try "description" field
+	// Generic fallback: try "description" field.
 	if desc, ok := fields["description"]; ok {
 		var s string
 		if json.Unmarshal(desc, &s) == nil && s != "" {

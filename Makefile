@@ -1,4 +1,6 @@
 BINARY    := cclog
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS   := -s -w -X main.version=$(VERSION)
 GOFLAGS   := -race
 COVER_MIN := 80
 
@@ -7,7 +9,7 @@ COVER_MIN := 80
 all: fmt vet lint test build  ## Full CI pipeline
 
 build:  ## Compile binary
-	go build -o $(BINARY) ./cmd/cclog/
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/cclog/
 
 test:  ## Run tests with race detector
 	go test $(GOFLAGS) -count=1 ./...
@@ -37,4 +39,4 @@ clean:  ## Remove build artifacts
 	rm -f $(BINARY) coverage.out
 
 install:  ## Install binary
-	go install ./cmd/cclog/
+	go install -ldflags "$(LDFLAGS)" ./cmd/cclog/
