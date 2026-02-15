@@ -163,9 +163,18 @@ func TestFindSession_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestDiscover_NonexistentDir(t *testing.T) {
+	_, err := Discover("/nonexistent/path/that/does/not/exist")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read claude dir")
+}
+
 func TestDecodeProjectPath(t *testing.T) {
 	assert.Equal(t, "/Users/erikgustavson/projects/cclog", decodeProjectPath("-Users-erikgustavson-projects-cclog"))
 	assert.Equal(t, "", decodeProjectPath(""))
+	// Note: decodeProjectPath treats ALL dashes as path separators.
+	// This is correct for Claude's encoding but means project names with dashes get mangled.
+	assert.Equal(t, "/a/b", decodeProjectPath("-a-b"))
 }
 
 func TestTruncatePrompt(t *testing.T) {

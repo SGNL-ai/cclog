@@ -115,11 +115,33 @@ type contentBlock struct {
 	Content   json.RawMessage `json:"content"` // can be string or array
 }
 
-var internalTagRe = regexp.MustCompile(`(?s)<(system-reminder|local-command-caveat|bash-input|bash-stdout|bash-stderr|antml:thinking|antml:function_calls|user-prompt-submit-hook)>.*?</(system-reminder|local-command-caveat|bash-input|bash-stdout|bash-stderr|antml:thinking|antml:function_calls|user-prompt-submit-hook)>`)
+var internalTagNames = []string{
+	"system-reminder",
+	"local-command-caveat",
+	"bash-input",
+	"bash-stdout",
+	"bash-stderr",
+	"antml:thinking",
+	"antml:function_calls",
+	"user-prompt-submit-hook",
+}
+
+var internalTagRes []*regexp.Regexp
+
+func init() {
+	for _, tag := range internalTagNames {
+		// Each regex matches its own opening and closing tag, ensuring they pair correctly.
+		re := regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(tag) + `>.*?</` + regexp.QuoteMeta(tag) + `>`)
+		internalTagRes = append(internalTagRes, re)
+	}
+}
 
 // StripSystemReminders removes internal Claude Code tags from text.
 func StripSystemReminders(text string) string {
-	return strings.TrimSpace(internalTagRe.ReplaceAllString(text, ""))
+	for _, re := range internalTagRes {
+		text = re.ReplaceAllString(text, "")
+	}
+	return strings.TrimSpace(text)
 }
 
 func parseLine(line []byte) (Message, bool, error) {

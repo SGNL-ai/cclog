@@ -130,3 +130,46 @@ func TestRenderMarkdown_QueueOperationEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(result), "queued")
 }
+
+func TestRenderMarkdown_FullConversation(t *testing.T) {
+	msgs := []parser.Message{
+		{Type: "user", Role: "user", Timestamp: ts("2026-02-13T07:00:00Z"), TextContent: "Fix the bug"},
+		{Type: "assistant", Role: "assistant", Timestamp: ts("2026-02-13T07:00:05Z"), TextContent: "On it.", ToolCalls: []parser.ToolCall{{Name: "Read", Description: "/main.go"}}},
+		{Type: "file-history-snapshot"},
+		{Type: "user", Role: "user", Timestamp: ts("2026-02-13T07:01:01Z"), TextContent: "Done?"},
+		{Type: "assistant", Role: "assistant", Timestamp: ts("2026-02-13T07:01:10Z"), TextContent: "Yes."},
+	}
+
+	result, err := RenderMarkdown(Options{Title: "Session", Messages: msgs})
+	require.NoError(t, err)
+
+	md := string(result)
+	assert.Contains(t, md, "# Session")
+	assert.Contains(t, md, "> Fix the bug")
+	assert.Contains(t, md, "On it.")
+	assert.Contains(t, md, "- `Read` — /main.go")
+	assert.Contains(t, md, "---")
+	assert.Contains(t, md, "> Done?")
+	assert.Contains(t, md, "Yes.")
+
+	// Verify ordering: user before assistant before boundary
+	userIdx := indexOf(md, "> Fix the bug")
+	assistantIdx := indexOf(md, "On it.")
+	boundaryIdx := indexOf(md, "---\n")
+	assert.True(t, userIdx < assistantIdx, "user should come before assistant")
+	assert.True(t, assistantIdx < boundaryIdx, "assistant should come before boundary")
+}
+
+func TestRenderMarkdown_AssistantNoTimestamp(t *testing.T) {
+	msgs := []parser.Message{
+		{Type: "assistant", Role: "assistant", TextContent: "No timestamp here."},
+	}
+
+	result, err := RenderMarkdown(Options{Title: "Test", Messages: msgs})
+	require.NoError(t, err)
+	md := string(result)
+	assert.Contains(t, md, "No timestamp here.")
+	assert.NotContains(t, md, "_0")
+}
+
+// indexOf is defined in html_test.go (same package)

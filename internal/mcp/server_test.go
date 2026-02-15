@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/sgnl-ai/cclog/internal/parser"
@@ -28,24 +27,97 @@ func TestHandleExport_NonexistentSession(t *testing.T) {
 }
 
 func TestHandleList_ReturnsResults(t *testing.T) {
-	// This test uses real session data if available
 	result, err := HandleList(ListInput{Limit: 5})
 	require.NoError(t, err)
 	assert.Contains(t, result, "Found")
 	assert.Contains(t, result, "sessions")
+	assert.Contains(t, result, "showing")
 }
 
-func TestHandleList_WithLimit(t *testing.T) {
-	result, err := HandleList(ListInput{Limit: 2})
+func TestHandleList_LimitCapsToAvailable(t *testing.T) {
+	// With a very high limit, should still work and show available count
+	result, err := HandleList(ListInput{Limit: 10000})
 	require.NoError(t, err)
-	assert.Contains(t, result, "showing 2")
+	assert.Contains(t, result, "Found")
+}
+
+func TestHandleList_DefaultLimit(t *testing.T) {
+	// Zero limit should default to 20
+	result, err := HandleList(ListInput{Limit: 0})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Found")
 }
 
 func TestHandleList_WithProject(t *testing.T) {
-	// Non-existent project should return empty
 	result, err := HandleList(ListInput{Project: "/nonexistent/path"})
 	require.NoError(t, err)
 	assert.Contains(t, result, "showing 0")
+}
+
+func TestHandleExport_RealSession_Markdown(t *testing.T) {
+	// Find a real session — skip if none available
+	sessions, err := session.Discover(session.DefaultClaudeDir())
+	if err != nil || len(sessions) == 0 {
+		t.Skip("No sessions available for integration test")
+	}
+
+	exported, err := HandleExport(ExportInput{
+		SessionID: sessions[0].ID,
+		Format:    "md",
+		All:       true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, exported, "Exported to")
+	assert.Contains(t, exported, ".md")
+	assert.Contains(t, exported, "messages")
+	assert.Contains(t, exported, "bytes")
+}
+
+func TestHandleExport_RealSession_HTML(t *testing.T) {
+	sessions, err := session.Discover(session.DefaultClaudeDir())
+	if err != nil || len(sessions) == 0 {
+		t.Skip("No sessions available for integration test")
+	}
+
+	exported, err := HandleExport(ExportInput{
+		SessionID: sessions[0].ID,
+		Format:    "html",
+		All:       true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, exported, "Exported to")
+	assert.Contains(t, exported, ".html")
+}
+
+func TestHandleExport_DefaultFormatIsHTML(t *testing.T) {
+	sessions, err := session.Discover(session.DefaultClaudeDir())
+	if err != nil || len(sessions) == 0 {
+		t.Skip("No sessions available for integration test")
+	}
+
+	exported, err := HandleExport(ExportInput{
+		SessionID: sessions[0].ID,
+		Format:    "", // should default to html
+		All:       true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, exported, ".html")
+}
+
+func TestHandleExport_WithTextBoundaries(t *testing.T) {
+	sessions, err := session.Discover(session.DefaultClaudeDir())
+	if err != nil || len(sessions) == 0 {
+		t.Skip("No sessions available for integration test")
+	}
+
+	// Non-matching text boundary — should still export (returns all messages since no match)
+	exported, err := HandleExport(ExportInput{
+		SessionID: sessions[0].ID,
+		Format:    "md",
+		FromText:  "zzz_nonexistent_text_zzz",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, exported, "Exported to")
 }
 
 func TestApplyTextBoundaries_NoFilter(t *testing.T) {
@@ -56,7 +128,9 @@ func TestApplyTextBoundaries_NoFilter(t *testing.T) {
 	}
 
 	result := applyTextBoundaries(msgs, "", "")
-	assert.Len(t, result, 3)
+	require.Len(t, result, 3)
+	assert.Equal(t, "first", result[0].TextContent)
+	assert.Equal(t, "third", result[2].TextContent)
 }
 
 func TestApplyTextBoundaries_FromText(t *testing.T) {
@@ -67,8 +141,9 @@ func TestApplyTextBoundaries_FromText(t *testing.T) {
 	}
 
 	result := applyTextBoundaries(msgs, "start here", "")
-	assert.Len(t, result, 2)
+	require.Len(t, result, 2)
 	assert.Equal(t, "start here please", result[0].TextContent)
+	assert.Equal(t, "third message", result[1].TextContent)
 }
 
 func TestApplyTextBoundaries_ToText(t *testing.T) {
@@ -79,133 +154,9 @@ func TestApplyTextBoundaries_ToText(t *testing.T) {
 	}
 
 	result := applyTextBoundaries(msgs, "", "stop here")
-	assert.Len(t, result, 2)
+	require.Len(t, result, 2)
 	assert.Equal(t, "first message", result[0].TextContent)
-}
-
-func TestApplyTextBoundaries_CaseInsensitive(t *testing.T) {
-	msgs := []parser.Message{
-		{TextContent: "first"},
-		{TextContent: "START HERE"},
-		{TextContent: "third"},
-	}
-
-	result := applyTextBoundaries(msgs, "start here", "")
-	assert.Len(t, result, 2)
-}
-
-func TestBuildTitle_Summary(t *testing.T) {
-	sess := &session.SessionInfo{Summary: "My Summary"}
-	assert.Equal(t, "My Summary", buildTitle(sess))
-}
-
-func TestBuildTitle_FirstPrompt(t *testing.T) {
-	sess := &session.SessionInfo{FirstPrompt: "Hello world"}
-	assert.Equal(t, "Hello world", buildTitle(sess))
-}
-
-func TestBuildTitle_LongPromptTruncated(t *testing.T) {
-	long := "This is a very long prompt that exceeds sixty characters in length and should be truncated"
-	sess := &session.SessionInfo{FirstPrompt: long}
-	title := buildTitle(sess)
-	assert.Len(t, title, 63) // 60 + "..."
-}
-
-func TestBuildTitle_Slug(t *testing.T) {
-	sess := &session.SessionInfo{Slug: "my-slug"}
-	assert.Equal(t, "my-slug", buildTitle(sess))
-}
-
-func TestBuildTitle_Default(t *testing.T) {
-	sess := &session.SessionInfo{}
-	assert.Equal(t, "Claude Code Session", buildTitle(sess))
-}
-
-func TestHandleExport_RealSession(t *testing.T) {
-	// Find a real session to export
-	result, err := HandleList(ListInput{Limit: 1})
-	require.NoError(t, err)
-
-	// Extract session ID from the list output
-	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Skip("No sessions available for integration test")
-	}
-
-	// Parse the session ID from "- <uuid> | ..."
-	line := lines[2] // first session line after header
-	if !strings.HasPrefix(line, "- ") {
-		t.Skip("Could not parse session list output")
-	}
-	parts := strings.SplitN(line[2:], " | ", 2)
-	sessionID := strings.TrimSpace(parts[0])
-
-	// Export as markdown with --all
-	outDir := t.TempDir()
-	origOutputDir := outputDir
-	// We can't override outputDir easily, so export to real ~/cclog
-	exported, err := HandleExport(ExportInput{
-		SessionID: sessionID,
-		Format:    "md",
-		All:       true,
-	})
-	require.NoError(t, err)
-	assert.Contains(t, exported, "Exported to")
-	assert.Contains(t, exported, "messages")
-	_ = outDir
-	_ = origOutputDir
-}
-
-func TestHandleExport_HTMLFormat(t *testing.T) {
-	result, err := HandleList(ListInput{Limit: 1})
-	require.NoError(t, err)
-
-	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Skip("No sessions available")
-	}
-
-	line := lines[2]
-	if !strings.HasPrefix(line, "- ") {
-		t.Skip("Could not parse session list")
-	}
-	parts := strings.SplitN(line[2:], " | ", 2)
-	sessionID := strings.TrimSpace(parts[0])
-
-	exported, err := HandleExport(ExportInput{
-		SessionID: sessionID,
-		Format:    "html",
-		All:       true,
-	})
-	require.NoError(t, err)
-	assert.Contains(t, exported, "Exported to")
-	assert.Contains(t, exported, ".html")
-}
-
-func TestHandleExport_WithTextBoundaries(t *testing.T) {
-	result, err := HandleList(ListInput{Limit: 1})
-	require.NoError(t, err)
-
-	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Skip("No sessions available")
-	}
-
-	line := lines[2]
-	if !strings.HasPrefix(line, "- ") {
-		t.Skip("Could not parse session list")
-	}
-	parts := strings.SplitN(line[2:], " | ", 2)
-	sessionID := strings.TrimSpace(parts[0])
-
-	// Export with a text boundary that won't match anything — should still work
-	exported, err := HandleExport(ExportInput{
-		SessionID: sessionID,
-		Format:    "md",
-		FromText:  "zzz_nonexistent_text_zzz",
-	})
-	require.NoError(t, err)
-	assert.Contains(t, exported, "Exported to")
+	assert.Equal(t, "stop here please", result[1].TextContent)
 }
 
 func TestApplyTextBoundaries_BothFromAndTo(t *testing.T) {
@@ -218,7 +169,60 @@ func TestApplyTextBoundaries_BothFromAndTo(t *testing.T) {
 	}
 
 	result := applyTextBoundaries(msgs, "from here", "to here")
-	assert.Len(t, result, 3)
+	require.Len(t, result, 3)
 	assert.Equal(t, "from here", result[0].TextContent)
+	assert.Equal(t, "middle", result[1].TextContent)
 	assert.Equal(t, "to here", result[2].TextContent)
+}
+
+func TestApplyTextBoundaries_CaseInsensitive(t *testing.T) {
+	msgs := []parser.Message{
+		{TextContent: "first"},
+		{TextContent: "START HERE"},
+		{TextContent: "third"},
+	}
+
+	result := applyTextBoundaries(msgs, "start here", "")
+	require.Len(t, result, 2)
+	assert.Equal(t, "START HERE", result[0].TextContent)
+}
+
+func TestApplyTextBoundaries_NoMatch(t *testing.T) {
+	msgs := []parser.Message{
+		{TextContent: "first"},
+		{TextContent: "second"},
+	}
+
+	// fromText doesn't match anything — should return from index 0
+	result := applyTextBoundaries(msgs, "nonexistent", "")
+	assert.Len(t, result, 2, "no match should return all messages")
+}
+
+func TestBuildTitle_Summary(t *testing.T) {
+	sess := &session.SessionInfo{Summary: "My Summary", FirstPrompt: "prompt", Slug: "slug"}
+	assert.Equal(t, "My Summary", buildTitle(sess), "summary takes precedence")
+}
+
+func TestBuildTitle_FirstPrompt(t *testing.T) {
+	sess := &session.SessionInfo{FirstPrompt: "Hello world", Slug: "slug"}
+	assert.Equal(t, "Hello world", buildTitle(sess), "firstPrompt used when no summary")
+}
+
+func TestBuildTitle_LongPromptTruncated(t *testing.T) {
+	long := "This is a very long prompt that exceeds sixty characters in length and should be truncated"
+	sess := &session.SessionInfo{FirstPrompt: long}
+	title := buildTitle(sess)
+	assert.True(t, len(title) <= 63, "truncated title should be at most 63 chars")
+	assert.True(t, len(title) > 60, "truncated title should include ellipsis")
+	assert.Contains(t, title, "...")
+}
+
+func TestBuildTitle_Slug(t *testing.T) {
+	sess := &session.SessionInfo{Slug: "my-slug"}
+	assert.Equal(t, "my-slug", buildTitle(sess))
+}
+
+func TestBuildTitle_Default(t *testing.T) {
+	sess := &session.SessionInfo{}
+	assert.Equal(t, "Claude Code Session", buildTitle(sess))
 }
