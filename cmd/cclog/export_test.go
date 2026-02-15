@@ -166,21 +166,29 @@ func TestRunExport_WithSessionID(t *testing.T) {
 }
 
 func TestRunExport_NonexistentSession(t *testing.T) {
-	stdin := strings.NewReader("")
-	err := runExport(exportOpts{
-		sessionID: "nonexistent-session-id",
-		all:       true,
-	}, stdin)
+	claudeDir, _ := testSession(t)
+	outDir := t.TempDir()
+
+	// Use export package directly since runExport hardcodes DefaultClaudeDir.
+	_, err := export.ExportSession(export.ExportOpts{
+		SessionID: "nonexistent-session-id",
+		All:       true,
+		ClaudeDir: claudeDir,
+		OutputDir: outDir,
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 
 // --- runList ---
 
-func TestRunList_NoSessions(t *testing.T) {
-	// With a nonexistent project, should print "No sessions found."
-	err := runList(listOpts{project: "/nonexistent/path"})
+func TestRunList_EmptyProject(t *testing.T) {
+	claudeDir, _ := testSession(t)
+
+	// Use export package directly since runList hardcodes DefaultClaudeDir.
+	sessions, err := export.ListSessions(claudeDir, "/nonexistent/path")
 	require.NoError(t, err)
+	assert.Empty(t, sessions)
 }
 
 // --- serveCmd / setupCmd construction ---
