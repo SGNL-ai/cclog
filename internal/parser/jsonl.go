@@ -39,7 +39,7 @@ func ParseFile(path string, startLine, endLine int) ([]Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open session file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	return ParseReader(f, startLine, endLine)
 }
@@ -104,11 +104,11 @@ type rawMessage struct {
 }
 
 type contentBlock struct {
-	Type    string `json:"type"`
-	Text    string `json:"text"`
-	Name    string `json:"name"`    // tool_use
-	ID      string `json:"id"`      // tool_use
-	Input   json.RawMessage `json:"input"` // tool_use
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`  // tool_use
+	ID    string          `json:"id"`    // tool_use
+	Input json.RawMessage `json:"input"` // tool_use
 
 	// tool_result fields
 	ToolUseID string          `json:"tool_use_id"`
