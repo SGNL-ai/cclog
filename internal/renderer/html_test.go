@@ -92,7 +92,7 @@ func TestRenderHTML_QueueOperation(t *testing.T) {
 
 	html := string(result)
 	assert.Contains(t, html, "also do this")
-	assert.Contains(t, html, "queued")
+	assert.Contains(t, html, `class="message user"`)
 }
 
 func TestRenderHTML_SkipsEmptyUserMessage(t *testing.T) {

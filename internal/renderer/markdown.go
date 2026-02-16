@@ -8,7 +8,7 @@ import (
 	"github.com/sgnl-ai/cclog/internal/parser"
 )
 
-// RenderMarkdown produces clean GitHub Flavored Markdown.
+// RenderMarkdown produces clean GitHub Flavored Markdown with grouped messages.
 func RenderMarkdown(opts Options) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -18,53 +18,44 @@ func RenderMarkdown(opts Options) ([]byte, error) {
 	}
 	buf.WriteString("# " + title + "\n\n")
 
-	for _, msg := range opts.Messages {
-		switch {
-		case msg.Type == "file-history-snapshot":
+	for _, g := range groupMessages(opts.Messages) {
+		switch g.Role {
+		case "boundary":
 			buf.WriteString("---\n\n")
-
-		case msg.Type == "queue-operation":
-			if msg.TextContent != "" {
-				writeMarkdownUser(&buf, msg, " _(queued)_")
+		case "user":
+			buf.WriteString("### User\n\n")
+			for _, msg := range g.Messages {
+				writeMarkdownEntry(&buf, msg)
 			}
-
-		case msg.Role == "user":
-			if msg.TextContent == "" {
-				continue
+			buf.WriteString("\n")
+		case "assistant":
+			buf.WriteString("### Assistant\n\n")
+			for _, msg := range g.Messages {
+				writeMarkdownEntry(&buf, msg)
 			}
-			writeMarkdownUser(&buf, msg, "")
-
-		case msg.Role == "assistant":
-			if msg.TextContent == "" && len(msg.ToolCalls) == 0 {
-				continue
-			}
-			writeMarkdownAssistant(&buf, msg)
+			buf.WriteString("\n")
 		}
 	}
 
 	return buf.Bytes(), nil
 }
 
-func writeMarkdownUser(buf *bytes.Buffer, msg parser.Message, suffix string) {
-	buf.WriteString("### User" + suffix + "\n")
-	writeMarkdownTimestamp(buf, msg)
-	buf.WriteString("\n")
-
-	// Blockquote user messages
-	lines := strings.Split(msg.TextContent, "\n")
-	for _, line := range lines {
-		buf.WriteString("> " + line + "\n")
+// writeMarkdownEntry writes a single timestamped message within a group.
+func writeMarkdownEntry(buf *bytes.Buffer, msg parser.Message) {
+	ts := "         "
+	if !msg.Timestamp.IsZero() {
+		ts = msg.Timestamp.Format("15:04:05") + " "
 	}
-	buf.WriteString("\n")
-}
-
-func writeMarkdownAssistant(buf *bytes.Buffer, msg parser.Message) {
-	buf.WriteString("### Assistant\n")
-	writeMarkdownTimestamp(buf, msg)
-	buf.WriteString("\n")
 
 	if msg.TextContent != "" {
-		buf.WriteString(msg.TextContent + "\n\n")
+		lines := strings.Split(msg.TextContent, "\n")
+		for i, line := range lines {
+			prefix := ts
+			if i > 0 {
+				prefix = "         "
+			}
+			buf.WriteString(prefix + line + "\n")
+		}
 	}
 
 	for _, tc := range msg.ToolCalls {
@@ -72,16 +63,7 @@ func writeMarkdownAssistant(buf *bytes.Buffer, msg parser.Message) {
 		if desc != "" {
 			desc = " — " + desc
 		}
-		fmt.Fprintf(buf, "- `%s`%s\n", tc.Name, desc)
-	}
-
-	if len(msg.ToolCalls) > 0 {
-		buf.WriteString("\n")
-	}
-}
-
-func writeMarkdownTimestamp(buf *bytes.Buffer, msg parser.Message) {
-	if !msg.Timestamp.IsZero() {
-		buf.WriteString("_" + msg.Timestamp.Format("15:04:05") + "_\n")
+		fmt.Fprintf(buf, "%s- `%s`%s\n", ts, tc.Name, desc)
+		ts = "         " // only first line gets timestamp
 	}
 }

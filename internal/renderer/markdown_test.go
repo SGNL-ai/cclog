@@ -30,8 +30,7 @@ func TestRenderMarkdown_UserMessage(t *testing.T) {
 
 	md := string(result)
 	assert.Contains(t, md, "### User\n")
-	assert.Contains(t, md, "> Hello world")
-	assert.Contains(t, md, "_07:00:00_")
+	assert.Contains(t, md, "07:00:00 Hello world")
 }
 
 func TestRenderMarkdown_AssistantMessage(t *testing.T) {
@@ -44,7 +43,7 @@ func TestRenderMarkdown_AssistantMessage(t *testing.T) {
 
 	md := string(result)
 	assert.Contains(t, md, "### Assistant\n")
-	assert.Contains(t, md, "I can help.")
+	assert.Contains(t, md, "07:00:05 I can help.")
 }
 
 func TestRenderMarkdown_ToolCalls(t *testing.T) {
@@ -85,8 +84,8 @@ func TestRenderMarkdown_QueueOperation(t *testing.T) {
 	require.NoError(t, err)
 
 	md := string(result)
-	assert.Contains(t, md, "_(queued)_")
-	assert.Contains(t, md, "> also do this")
+	assert.Contains(t, md, "### User")
+	assert.Contains(t, md, "also do this")
 }
 
 func TestRenderMarkdown_SkipsEmptyUserMessage(t *testing.T) {
@@ -111,14 +110,16 @@ func TestRenderMarkdown_SkipsEmptyAssistantMessage(t *testing.T) {
 
 func TestRenderMarkdown_MultilineUser(t *testing.T) {
 	msgs := []parser.Message{
-		{Type: "user", Role: "user", TextContent: "line one\nline two\nline three"},
+		{Type: "user", Role: "user", Timestamp: ts("2026-02-13T07:00:00Z"), TextContent: "line one\nline two\nline three"},
 	}
 
 	result, err := RenderMarkdown(Options{Title: "Test", Messages: msgs})
 	require.NoError(t, err)
 
 	md := string(result)
-	assert.Contains(t, md, "> line one\n> line two\n> line three")
+	assert.Contains(t, md, "07:00:00 line one")
+	assert.Contains(t, md, "         line two")
+	assert.Contains(t, md, "         line three")
 }
 
 func TestRenderMarkdown_QueueOperationEmpty(t *testing.T) {
@@ -128,7 +129,28 @@ func TestRenderMarkdown_QueueOperationEmpty(t *testing.T) {
 
 	result, err := RenderMarkdown(Options{Title: "Test", Messages: msgs})
 	require.NoError(t, err)
-	assert.NotContains(t, string(result), "queued")
+	assert.NotContains(t, string(result), "User")
+}
+
+func TestRenderMarkdown_GroupsConsecutiveSameRole(t *testing.T) {
+	msgs := []parser.Message{
+		{Type: "assistant", Role: "assistant", Timestamp: ts("2026-02-13T07:00:05Z"), TextContent: "First thing."},
+		{Type: "assistant", Role: "assistant", Timestamp: ts("2026-02-13T07:00:10Z"), TextContent: "Second thing."},
+		{Type: "assistant", Role: "assistant", Timestamp: ts("2026-02-13T07:00:15Z"), TextContent: "Third thing."},
+	}
+
+	result, err := RenderMarkdown(Options{Title: "Test", Messages: msgs})
+	require.NoError(t, err)
+
+	md := string(result)
+	// Should have exactly one "### Assistant" header
+	first := indexOf(md, "### Assistant")
+	second := indexOf(md[first+1:], "### Assistant")
+	assert.Equal(t, -1, second, "should only have one Assistant header")
+
+	assert.Contains(t, md, "07:00:05 First thing.")
+	assert.Contains(t, md, "07:00:10 Second thing.")
+	assert.Contains(t, md, "07:00:15 Third thing.")
 }
 
 func TestRenderMarkdown_FullConversation(t *testing.T) {
@@ -145,15 +167,15 @@ func TestRenderMarkdown_FullConversation(t *testing.T) {
 
 	md := string(result)
 	assert.Contains(t, md, "# Session")
-	assert.Contains(t, md, "> Fix the bug")
+	assert.Contains(t, md, "Fix the bug")
 	assert.Contains(t, md, "On it.")
 	assert.Contains(t, md, "- `Read` — /main.go")
 	assert.Contains(t, md, "---")
-	assert.Contains(t, md, "> Done?")
+	assert.Contains(t, md, "Done?")
 	assert.Contains(t, md, "Yes.")
 
-	// Verify ordering: user before assistant before boundary
-	userIdx := indexOf(md, "> Fix the bug")
+	// Verify ordering
+	userIdx := indexOf(md, "Fix the bug")
 	assistantIdx := indexOf(md, "On it.")
 	boundaryIdx := indexOf(md, "---\n")
 	assert.True(t, userIdx < assistantIdx, "user should come before assistant")
@@ -169,7 +191,6 @@ func TestRenderMarkdown_AssistantNoTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	md := string(result)
 	assert.Contains(t, md, "No timestamp here.")
-	assert.NotContains(t, md, "_0")
 }
 
 // indexOf is defined in html_test.go (same package)
