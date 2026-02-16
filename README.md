@@ -1,6 +1,7 @@
 # cclog
 
 [![CI](https://github.com/SGNL-ai/cclog/actions/workflows/ci.yml/badge.svg)](https://github.com/SGNL-ai/cclog/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/SGNL-ai/cclog/graph/badge.svg)](https://codecov.io/gh/SGNL-ai/cclog)
 [![Go Report Card](https://goreportcard.com/badge/github.com/sgnl-ai/cclog)](https://goreportcard.com/report/github.com/sgnl-ai/cclog)
 [![Go Reference](https://pkg.go.dev/badge/github.com/sgnl-ai/cclog.svg)](https://pkg.go.dev/github.com/sgnl-ai/cclog)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
