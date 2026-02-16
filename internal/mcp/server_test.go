@@ -174,3 +174,32 @@ func handleListWithDir(input ListInput, claudeDir string) (string, error) {
 	}
 	return export.FormatSessionList(sessions, input.Limit), nil
 }
+
+// handleSearchPromptsWithDir is a test helper with injected claudeDir.
+func handleSearchPromptsWithDir(input SearchPromptsInput, claudeDir string) (string, error) {
+	result, err := export.SearchPrompts(export.SearchOpts{
+		ClaudeDir: claudeDir,
+		Project:   input.Project,
+		Limit:     input.Limit,
+	})
+	if err != nil {
+		return "", err
+	}
+	return export.FormatPromptSearch(result), nil
+}
+
+func TestHandleSearchPrompts_ReturnsPrompts(t *testing.T) {
+	claudeDir, _ := testSession(t)
+	result, err := handleSearchPromptsWithDir(SearchPromptsInput{}, claudeDir)
+	require.NoError(t, err)
+	assert.Contains(t, result, "user prompts across")
+	assert.Contains(t, result, "[user]")
+	assert.Contains(t, result, "Hello world")
+}
+
+func TestHandleSearchPrompts_WithProject(t *testing.T) {
+	claudeDir, _ := testSession(t)
+	result, err := handleSearchPromptsWithDir(SearchPromptsInput{Project: "/nonexistent"}, claudeDir)
+	require.NoError(t, err)
+	assert.Contains(t, result, "Found 0 user prompts")
+}

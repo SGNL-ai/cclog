@@ -274,6 +274,9 @@ func peekSession(path string) (slug, firstPrompt string) {
 			// Content can be string or array
 			var text string
 			if json.Unmarshal(entry.Message.Content, &text) == nil {
+				if isInternalPrompt(text) {
+					continue
+				}
 				firstPrompt = truncatePrompt(text, 100)
 				return
 			}
@@ -284,7 +287,7 @@ func peekSession(path string) (slug, firstPrompt string) {
 			}
 			if json.Unmarshal(entry.Message.Content, &blocks) == nil {
 				for _, b := range blocks {
-					if b.Type == "text" && b.Text != "" {
+					if b.Type == "text" && b.Text != "" && !isInternalPrompt(b.Text) {
 						firstPrompt = truncatePrompt(b.Text, 100)
 						return
 					}
@@ -294,6 +297,24 @@ func peekSession(path string) (slug, firstPrompt string) {
 	}
 
 	return slug, firstPrompt
+}
+
+// isInternalPrompt returns true if the text is a Claude Code internal marker
+// rather than a real user prompt.
+// isInternalPrompt returns true if the text is a Claude Code internal marker
+// rather than a real user prompt.
+func isInternalPrompt(text string) bool {
+	markers := []string{
+		"[Request interrupted by user",
+		"<local-command-caveat>",
+		"<command-name>",
+	}
+	for _, m := range markers {
+		if strings.HasPrefix(text, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncatePrompt(s string, max int) string {

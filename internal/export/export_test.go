@@ -57,20 +57,20 @@ func TestDefaultOutputDir(t *testing.T) {
 
 func TestOutputPath_WithSlug(t *testing.T) {
 	mod := time.Date(2025, 2, 14, 0, 0, 0, 0, time.UTC)
-	path := outputPath("/tmp/out", "my-session", "abcdefgh", mod, ".html")
-	assert.Equal(t, "/tmp/out/my-session-2025-02-14.html", path)
+	path := outputPath("/tmp/out", "my-session", "abcdefgh-1234-5678", mod, ".html")
+	assert.Equal(t, "/tmp/out/my-session-abcdefgh-2025-02-14.html", path)
 }
 
 func TestOutputPath_WithoutSlug(t *testing.T) {
 	mod := time.Date(2025, 2, 14, 0, 0, 0, 0, time.UTC)
-	path := outputPath("/tmp/out", "", "abcdefgh12345", mod, ".md")
+	path := outputPath("/tmp/out", "", "abcdefgh-1234-5678", mod, ".md")
 	assert.Equal(t, "/tmp/out/abcdefgh-2025-02-14.md", path)
 }
 
 func TestOutputPath_ZeroTime(t *testing.T) {
-	path := outputPath("/tmp/out", "slug", "abcdefgh", time.Time{}, ".html")
+	path := outputPath("/tmp/out", "slug", "abcdefgh-1234-5678", time.Time{}, ".html")
 	today := time.Now().Format("2006-01-02")
-	assert.Equal(t, "/tmp/out/slug-"+today+".html", path)
+	assert.Equal(t, "/tmp/out/slug-abcdefgh-"+today+".html", path)
 }
 
 // --- ShortID ---
@@ -377,6 +377,158 @@ func TestExportSession_PrefixMatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result.OutputPath, ".html")
+}
+
+// --- SearchPrompts ---
+
+func TestSearchPrompts_ReturnsUserPrompts(t *testing.T) {
+	claudeDir, _ := testSession(t)
+
+	result, err := SearchPrompts(SearchOpts{ClaudeDir: claudeDir})
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.Sessions)
+	assert.NotEmpty(t, result.Prompts)
+
+	// Should only contain user prompts, not assistant messages.
+	for _, p := range result.Prompts {
+		assert.NotEmpty(t, p.SessionID)
+		assert.NotEmpty(t, p.Text)
+	}
+}
+
+func TestSearchPrompts_FiltersByProject(t *testing.T) {
+	claudeDir, _ := testSession(t)
+
+	result, err := SearchPrompts(SearchOpts{ClaudeDir: claudeDir, Project: "/nonexistent"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Prompts)
+}
+
+func TestSearchPrompts_RespectsLimit(t *testing.T) {
+	claudeDir, _, _ := testTwoSessions(t)
+
+	result, err := SearchPrompts(SearchOpts{ClaudeDir: claudeDir, Limit: 1})
+	require.NoError(t, err)
+	assert.Len(t, result.Sessions, 1)
+}
+
+func TestSearchPrompts_TruncatesLongPrompts(t *testing.T) {
+	claudeDir, _ := testSession(t)
+
+	result, err := SearchPrompts(SearchOpts{ClaudeDir: claudeDir})
+	require.NoError(t, err)
+
+	for _, p := range result.Prompts {
+		assert.LessOrEqual(t, len(p.Text), maxPromptSearchLen+3) // +3 for "..."
+	}
+}
+
+// --- FormatPromptSearch ---
+
+func TestFormatPromptSearch_GroupsBySession(t *testing.T) {
+	claudeDir, _, _ := testTwoSessions(t)
+
+	result, err := SearchPrompts(SearchOpts{ClaudeDir: claudeDir})
+	require.NoError(t, err)
+
+	formatted := FormatPromptSearch(result)
+	assert.Contains(t, formatted, "Session: aaaaaaaa")
+	assert.Contains(t, formatted, "Session: bbbbbbbb")
+	assert.Contains(t, formatted, "[user]")
+	assert.Contains(t, formatted, "Set up the testing framework")
+	assert.Contains(t, formatted, "Continue working on the testing repo")
+}
+
+func TestFormatPromptSearch_ShowsPromptCount(t *testing.T) {
+	claudeDir, _ := testSession(t)
+
+	result, err := SearchPrompts(SearchOpts{ClaudeDir: claudeDir})
+	require.NoError(t, err)
+
+	formatted := FormatPromptSearch(result)
+	assert.Contains(t, formatted, "Found")
+	assert.Contains(t, formatted, "user prompts across")
+}
+
+// --- Multi-session export ---
+
+func TestExportSession_MultiSession(t *testing.T) {
+	claudeDir, s1, s2 := testTwoSessions(t)
+	outDir := t.TempDir()
+
+	result, err := ExportSession(ExportOpts{
+		SessionID: s1 + "," + s2,
+		Format:    "md",
+		All:       true,
+		ClaudeDir: claudeDir,
+		OutputDir: outDir,
+	})
+	require.NoError(t, err)
+	assert.Greater(t, result.MessageCount, 4, "merged sessions should have messages from both")
+
+	// Verify file was written.
+	data, err := os.ReadFile(result.OutputPath)
+	require.NoError(t, err)
+	md := string(data)
+
+	// Should contain content from both sessions.
+	assert.Contains(t, md, "Set up the testing framework")
+	assert.Contains(t, md, "Continue working on the testing repo")
+}
+
+func TestExportSession_MultiSessionWithBoundaries(t *testing.T) {
+	claudeDir, s1, s2 := testTwoSessions(t)
+	outDir := t.TempDir()
+
+	result, err := ExportSession(ExportOpts{
+		SessionID: s1 + "," + s2,
+		FromText:  "Looks good",
+		ToText:    "Continue working",
+		ClaudeDir: claudeDir,
+		OutputDir: outDir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(result.OutputPath)
+	require.NoError(t, err)
+	md := string(data)
+
+	assert.Contains(t, md, "Looks good")
+	assert.Contains(t, md, "Continue working")
+	// Should NOT contain the first message from session 1.
+	assert.NotContains(t, md, "Set up the testing framework")
+}
+
+func TestExportSession_MultiSessionPrefixMatch(t *testing.T) {
+	claudeDir, _, _ := testTwoSessions(t)
+	outDir := t.TempDir()
+
+	// Use prefixes instead of full IDs.
+	result, err := ExportSession(ExportOpts{
+		SessionID: "aaaaaaaa,bbbbbbbb",
+		All:       true,
+		ClaudeDir: claudeDir,
+		OutputDir: outDir,
+	})
+	require.NoError(t, err)
+	assert.Greater(t, result.MessageCount, 4)
+}
+
+// --- splitSessionIDs ---
+
+func TestSplitSessionIDs_Single(t *testing.T) {
+	ids := splitSessionIDs("abc123")
+	assert.Equal(t, []string{"abc123"}, ids)
+}
+
+func TestSplitSessionIDs_Multiple(t *testing.T) {
+	ids := splitSessionIDs("abc123, def456 , ghi789")
+	assert.Equal(t, []string{"abc123", "def456", "ghi789"}, ids)
+}
+
+func TestSplitSessionIDs_IgnoresEmpty(t *testing.T) {
+	ids := splitSessionIDs("abc,,def,")
+	assert.Equal(t, []string{"abc", "def"}, ids)
 }
 
 // --- helpers ---

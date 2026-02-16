@@ -4,20 +4,23 @@ import (
 	"bytes"
 	"fmt"
 	"html"
-	"strings"
 
 	"github.com/sgnl-ai/cclog/internal/parser"
+	"github.com/yuin/goldmark"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 )
 
 // RenderHTML produces a self-contained HTML file with a dark terminal theme.
+// Consecutive same-role messages are grouped under a single role header.
 func RenderHTML(opts Options) ([]byte, error) {
 	var buf bytes.Buffer
 
 	buf.WriteString(htmlHead(opts.Title))
 
-	for _, msg := range opts.Messages {
-		switch {
-		case msg.Type == "file-history-snapshot":
+	for _, g := range groupMessages(opts.Messages) {
+		switch g.Role {
+		case "boundary":
+			msg := g.Messages[0]
 			buf.WriteString(`<div class="boundary">` + "\n")
 			buf.WriteString(`  <span class="boundary-marker">` + html.EscapeString("──── session boundary ────") + `</span>` + "\n")
 			if !msg.Timestamp.IsZero() {
@@ -25,37 +28,22 @@ func RenderHTML(opts Options) ([]byte, error) {
 			}
 			buf.WriteString("</div>\n")
 
-		case msg.Type == "queue-operation":
-			if msg.TextContent != "" {
-				buf.WriteString(`<div class="message user">` + "\n")
-				buf.WriteString(`  <div class="role">user <span class="badge">queued</span></div>` + "\n")
-				writeTimestamp(&buf, msg)
-				buf.WriteString(`  <div class="content">` + escapeAndFormat(msg.TextContent) + `</div>` + "\n")
-				buf.WriteString("</div>\n")
-			}
-
-		case msg.Role == "user":
-			if msg.TextContent == "" {
-				continue
-			}
+		case "user":
 			buf.WriteString(`<div class="message user">` + "\n")
 			buf.WriteString(`  <div class="role">user</div>` + "\n")
-			writeTimestamp(&buf, msg)
-			buf.WriteString(`  <div class="content">` + escapeAndFormat(msg.TextContent) + `</div>` + "\n")
+			for _, msg := range g.Messages {
+				writeHTMLEntry(&buf, msg)
+			}
 			buf.WriteString("</div>\n")
 
-		case msg.Role == "assistant":
-			if msg.TextContent == "" && len(msg.ToolCalls) == 0 {
-				continue
-			}
+		case "assistant":
 			buf.WriteString(`<div class="message assistant">` + "\n")
 			buf.WriteString(`  <div class="role">assistant</div>` + "\n")
-			writeTimestamp(&buf, msg)
-			if msg.TextContent != "" {
-				buf.WriteString(`  <div class="content">` + escapeAndFormat(msg.TextContent) + `</div>` + "\n")
-			}
-			for _, tc := range msg.ToolCalls {
-				writeToolCall(&buf, tc)
+			for _, msg := range g.Messages {
+				writeHTMLEntry(&buf, msg)
+				for _, tc := range msg.ToolCalls {
+					writeToolCall(&buf, tc, msg)
+				}
 			}
 			buf.WriteString("</div>\n")
 		}
@@ -66,34 +54,48 @@ func RenderHTML(opts Options) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func writeTimestamp(buf *bytes.Buffer, msg parser.Message) {
-	if !msg.Timestamp.IsZero() {
-		buf.WriteString(`  <div class="timestamp">` + msg.Timestamp.Format("15:04:05") + `</div>` + "\n")
+// writeHTMLEntry writes a single timestamped entry within a message group.
+// Only renders if there is text content; tool calls are handled by writeToolCall.
+func writeHTMLEntry(buf *bytes.Buffer, msg parser.Message) {
+	if msg.TextContent == "" {
+		return
 	}
+	buf.WriteString(`  <div class="entry">` + "\n")
+	if !msg.Timestamp.IsZero() {
+		buf.WriteString(`    <span class="timestamp">` + msg.Timestamp.Format("15:04:05") + `</span>` + "\n")
+	}
+	buf.WriteString(`    <div class="content">` + renderMarkdownToHTML(msg.TextContent) + `</div>` + "\n")
+	buf.WriteString(`  </div>` + "\n")
 }
 
-func writeToolCall(buf *bytes.Buffer, tc parser.ToolCall) {
+func writeToolCall(buf *bytes.Buffer, tc parser.ToolCall, msg parser.Message) {
 	desc := tc.Description
 	if desc != "" {
 		desc = " — " + html.EscapeString(desc)
 	}
-	fmt.Fprintf(buf, `  <div class="tool-call">● %s%s</div>`+"\n", html.EscapeString(tc.Name), desc)
+	buf.WriteString(`  <div class="entry">` + "\n")
+	if !msg.Timestamp.IsZero() {
+		buf.WriteString(`    <span class="timestamp">` + msg.Timestamp.Format("15:04:05") + `</span>` + "\n")
+	}
+	fmt.Fprintf(buf, `    <div class="tool-call">● %s%s</div>`+"\n", html.EscapeString(tc.Name), desc)
+	buf.WriteString(`  </div>` + "\n")
 }
 
-func escapeAndFormat(text string) string {
-	escaped := html.EscapeString(text)
-	// Convert double newlines to paragraph breaks
-	paragraphs := strings.Split(escaped, "\n\n")
-	var parts []string
-	for _, p := range paragraphs {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			// Convert single newlines to <br>
-			p = strings.ReplaceAll(p, "\n", "<br>\n")
-			parts = append(parts, "<p>"+p+"</p>")
-		}
+// mdRenderer is a goldmark instance configured for safe HTML output.
+var mdRenderer = goldmark.New(
+	goldmark.WithRendererOptions(
+		gmhtml.WithHardWraps(),
+	),
+)
+
+// renderMarkdownToHTML converts Markdown text to HTML using goldmark.
+func renderMarkdownToHTML(text string) string {
+	var buf bytes.Buffer
+	if err := mdRenderer.Convert([]byte(text), &buf); err != nil {
+		// Fallback: escape and wrap in <p>.
+		return "<p>" + html.EscapeString(text) + "</p>"
 	}
-	return strings.Join(parts, "\n")
+	return buf.String()
 }
 
 func htmlHead(title string) string {
@@ -141,35 +143,32 @@ func htmlHead(title string) string {
     border-radius: 8px;
     background: rgba(255,255,255,0.03);
   }
-  .message.user {
-    border-left: 3px solid var(--user-border);
-  }
-  .message.assistant {
-    border-left: 3px solid var(--assistant-border);
-  }
+  .message.user { border-left: 3px solid var(--user-border); }
+  .message.assistant { border-left: 3px solid var(--assistant-border); }
   .role {
     font-weight: 600;
     font-size: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.75rem;
   }
   .message.user .role { color: var(--user-border); }
   .message.assistant .role { color: var(--assistant-border); }
-  .badge {
-    background: var(--badge-bg);
-    color: var(--fg);
-    padding: 0.1em 0.4em;
-    border-radius: 3px;
-    font-size: 0.7rem;
-    margin-left: 0.5em;
+  .entry {
+    display: grid;
+    grid-template-columns: 5.5em 1fr;
+    gap: 0 0.75rem;
+    margin: 0.4rem 0;
+    align-items: start;
   }
   .timestamp {
     color: var(--timestamp-color);
     font-size: 0.75rem;
     font-family: monospace;
+    padding-top: 0.15em;
   }
-  .content p { margin: 0.5em 0; }
+  .content { line-height: 1.45; min-width: 0; overflow-wrap: break-word; }
+  .content p { margin: 0.3em 0; }
   .content code {
     background: rgba(255,255,255,0.08);
     padding: 0.15em 0.35em;
@@ -177,12 +176,24 @@ func htmlHead(title string) string {
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 0.9em;
   }
+  .content pre {
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin: 0.5em 0;
+    overflow-x: auto;
+    max-width: 100%%;
+  }
+  .content pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+    line-height: 1.4;
+  }
   .tool-call {
     color: var(--tool-color);
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 0.85rem;
-    margin: 0.4rem 0;
-    padding: 0.3rem 0;
   }
   .boundary {
     text-align: center;
@@ -197,6 +208,8 @@ func htmlHead(title string) string {
   @media (max-width: 600px) {
     body { padding: 1rem; font-size: 14px; }
     .message { padding: 0.75rem 1rem; }
+    .entry { grid-template-columns: 1fr; }
+    .entry .timestamp { margin-bottom: 0.2rem; }
   }
 </style>
 </head>
