@@ -39,7 +39,7 @@ func ParseFile(path string, startLine, endLine int) ([]Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open session file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	return ParseReader(f, startLine, endLine)
 }
@@ -104,22 +104,44 @@ type rawMessage struct {
 }
 
 type contentBlock struct {
-	Type    string `json:"type"`
-	Text    string `json:"text"`
-	Name    string `json:"name"`    // tool_use
-	ID      string `json:"id"`      // tool_use
-	Input   json.RawMessage `json:"input"` // tool_use
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`  // tool_use
+	ID    string          `json:"id"`    // tool_use
+	Input json.RawMessage `json:"input"` // tool_use
 
 	// tool_result fields
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"` // can be string or array
 }
 
-var internalTagRe = regexp.MustCompile(`(?s)<(system-reminder|local-command-caveat|bash-input|bash-stdout|bash-stderr|antml:thinking|antml:function_calls|user-prompt-submit-hook)>.*?</(system-reminder|local-command-caveat|bash-input|bash-stdout|bash-stderr|antml:thinking|antml:function_calls|user-prompt-submit-hook)>`)
+var internalTagNames = []string{
+	"system-reminder",
+	"local-command-caveat",
+	"bash-input",
+	"bash-stdout",
+	"bash-stderr",
+	"antml:thinking",
+	"antml:function_calls",
+	"user-prompt-submit-hook",
+}
+
+var internalTagRes []*regexp.Regexp
+
+func init() {
+	for _, tag := range internalTagNames {
+		// Each regex matches its own opening and closing tag, ensuring they pair correctly.
+		re := regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(tag) + `>.*?</` + regexp.QuoteMeta(tag) + `>`)
+		internalTagRes = append(internalTagRes, re)
+	}
+}
 
 // StripSystemReminders removes internal Claude Code tags from text.
 func StripSystemReminders(text string) string {
-	return strings.TrimSpace(internalTagRe.ReplaceAllString(text, ""))
+	for _, re := range internalTagRes {
+		text = re.ReplaceAllString(text, "")
+	}
+	return strings.TrimSpace(text)
 }
 
 func parseLine(line []byte) (Message, bool, error) {
@@ -224,6 +246,20 @@ func parseMessage(msg Message, rawMsg json.RawMessage) (Message, bool, error) {
 	return msg, false, nil
 }
 
+// toolDescFields maps tool names to the JSON field and optional prefix used
+// for generating a human-readable description.
+var toolDescFields = map[string]struct {
+	field  string
+	prefix string
+}{
+	"Read":  {field: "file_path"},
+	"Write": {field: "file_path"},
+	"Edit":  {field: "file_path"},
+	"Grep":  {field: "pattern", prefix: "pattern: "},
+	"Glob":  {field: "pattern", prefix: "pattern: "},
+	"Task":  {field: "description"},
+}
+
 // extractToolDescription pulls a human-readable summary from tool input.
 func extractToolDescription(toolName string, input json.RawMessage) string {
 	if len(input) == 0 {
@@ -235,7 +271,7 @@ func extractToolDescription(toolName string, input json.RawMessage) string {
 		return ""
 	}
 
-	// For Bash, use the description field if present, else the command
+	// Bash is special: prefer description, fall back to command.
 	if toolName == "Bash" {
 		if desc, ok := fields["description"]; ok {
 			var s string
@@ -251,67 +287,17 @@ func extractToolDescription(toolName string, input json.RawMessage) string {
 		}
 	}
 
-	// For Read, show the file path
-	if toolName == "Read" {
-		if fp, ok := fields["file_path"]; ok {
+	// Table-driven lookup for all other tools.
+	if spec, ok := toolDescFields[toolName]; ok {
+		if raw, ok := fields[spec.field]; ok {
 			var s string
-			if json.Unmarshal(fp, &s) == nil {
-				return s
+			if json.Unmarshal(raw, &s) == nil && s != "" {
+				return spec.prefix + s
 			}
 		}
 	}
 
-	// For Write, show the file path
-	if toolName == "Write" {
-		if fp, ok := fields["file_path"]; ok {
-			var s string
-			if json.Unmarshal(fp, &s) == nil {
-				return s
-			}
-		}
-	}
-
-	// For Edit, show the file path
-	if toolName == "Edit" {
-		if fp, ok := fields["file_path"]; ok {
-			var s string
-			if json.Unmarshal(fp, &s) == nil {
-				return s
-			}
-		}
-	}
-
-	// For Grep, show the pattern
-	if toolName == "Grep" {
-		if pat, ok := fields["pattern"]; ok {
-			var s string
-			if json.Unmarshal(pat, &s) == nil {
-				return fmt.Sprintf("pattern: %s", s)
-			}
-		}
-	}
-
-	// For Glob, show the pattern
-	if toolName == "Glob" {
-		if pat, ok := fields["pattern"]; ok {
-			var s string
-			if json.Unmarshal(pat, &s) == nil {
-				return fmt.Sprintf("pattern: %s", s)
-			}
-		}
-	}
-
-	// For Task, show the description
-	if toolName == "Task" {
-		if desc, ok := fields["description"]; ok {
-			var s string
-			if json.Unmarshal(desc, &s) == nil {
-				return s
-			}
-		}
-	}
-
-	// Generic: try "description" field
+	// Generic fallback: try "description" field.
 	if desc, ok := fields["description"]; ok {
 		var s string
 		if json.Unmarshal(desc, &s) == nil && s != "" {

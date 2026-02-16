@@ -72,7 +72,7 @@ func writeMarkdownAssistant(buf *bytes.Buffer, msg parser.Message) {
 		if desc != "" {
 			desc = " — " + desc
 		}
-		buf.WriteString(fmt.Sprintf("- `%s`%s\n", tc.Name, desc))
+		fmt.Fprintf(buf, "- `%s`%s\n", tc.Name, desc)
 	}
 
 	if len(msg.ToolCalls) > 0 {

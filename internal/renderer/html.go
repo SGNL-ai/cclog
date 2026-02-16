@@ -77,7 +77,7 @@ func writeToolCall(buf *bytes.Buffer, tc parser.ToolCall) {
 	if desc != "" {
 		desc = " — " + html.EscapeString(desc)
 	}
-	buf.WriteString(fmt.Sprintf(`  <div class="tool-call">● %s%s</div>`+"\n", html.EscapeString(tc.Name), desc))
+	fmt.Fprintf(buf, `  <div class="tool-call">● %s%s</div>`+"\n", html.EscapeString(tc.Name), desc)
 }
 
 func escapeAndFormat(text string) string {

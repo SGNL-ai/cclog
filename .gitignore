@@ -1,3 +1,4 @@
 /cclog
 /dist/
 *.exe
+coverage.out

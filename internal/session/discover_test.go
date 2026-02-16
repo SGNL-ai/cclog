@@ -163,9 +163,63 @@ func TestFindSession_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestFindSession_PrefixMatch(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "-Users-test-projects-myapp")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+
+	fullID := "abcdef12-3456-7890"
+	idx := sessionsIndex{
+		Version: 1,
+		Entries: []indexEntry{
+			{SessionID: fullID, FullPath: filepath.Join(projectDir, fullID+".jsonl"), FirstPrompt: "found by prefix", Modified: "2026-02-13T08:00:00.000Z"},
+		},
+	}
+	data, _ := json.Marshal(idx)
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "sessions-index.json"), data, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, fullID+".jsonl"), []byte{}, 0o644))
+
+	s, err := FindSession(dir, "abcdef12")
+	require.NoError(t, err)
+	assert.Equal(t, "found by prefix", s.FirstPrompt)
+	assert.Equal(t, fullID, s.ID)
+}
+
+func TestFindSession_AmbiguousPrefix(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "-Users-test-projects-myapp")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+
+	idx := sessionsIndex{
+		Version: 1,
+		Entries: []indexEntry{
+			{SessionID: "abc-111", FullPath: filepath.Join(projectDir, "abc-111.jsonl"), Modified: "2026-02-13T08:00:00.000Z"},
+			{SessionID: "abc-222", FullPath: filepath.Join(projectDir, "abc-222.jsonl"), Modified: "2026-02-13T09:00:00.000Z"},
+		},
+	}
+	data, _ := json.Marshal(idx)
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "sessions-index.json"), data, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "abc-111.jsonl"), []byte{}, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "abc-222.jsonl"), []byte{}, 0o644))
+
+	_, err := FindSession(dir, "abc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous")
+	assert.Contains(t, err.Error(), "2 matches")
+}
+
+func TestDiscover_NonexistentDir(t *testing.T) {
+	_, err := Discover("/nonexistent/path/that/does/not/exist")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read claude dir")
+}
+
 func TestDecodeProjectPath(t *testing.T) {
 	assert.Equal(t, "/Users/erikgustavson/projects/cclog", decodeProjectPath("-Users-erikgustavson-projects-cclog"))
 	assert.Equal(t, "", decodeProjectPath(""))
+	// Note: decodeProjectPath treats ALL dashes as path separators.
+	// This is correct for Claude's encoding but means project names with dashes get mangled.
+	assert.Equal(t, "/a/b", decodeProjectPath("-a-b"))
 }
 
 func TestTruncatePrompt(t *testing.T) {

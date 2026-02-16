@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,9 +26,9 @@ type SessionInfo struct {
 
 // sessionsIndex is the JSON structure of sessions-index.json.
 type sessionsIndex struct {
-	Version      int            `json:"version"`
-	Entries      []indexEntry   `json:"entries"`
-	OriginalPath string         `json:"originalPath"`
+	Version      int          `json:"version"`
+	Entries      []indexEntry `json:"entries"`
+	OriginalPath string       `json:"originalPath"`
 }
 
 type indexEntry struct {
@@ -109,19 +110,36 @@ func DiscoverForProject(claudeDir, projectPath string) ([]SessionInfo, error) {
 	return filtered, nil
 }
 
-// FindSession finds a specific session by ID across all projects.
+// FindSession finds a specific session by ID (or unique prefix) across all projects.
 func FindSession(claudeDir, sessionID string) (*SessionInfo, error) {
 	all, err := Discover(claudeDir)
 	if err != nil {
 		return nil, err
 	}
 
+	// Exact match first
 	for _, s := range all {
 		if s.ID == sessionID {
 			return &s, nil
 		}
 	}
-	return nil, fmt.Errorf("session %q not found", sessionID)
+
+	// Prefix match
+	var matches []SessionInfo
+	for _, s := range all {
+		if strings.HasPrefix(s.ID, sessionID) {
+			matches = append(matches, s)
+		}
+	}
+
+	switch len(matches) {
+	case 1:
+		return &matches[0], nil
+	case 0:
+		return nil, fmt.Errorf("session %q not found", sessionID)
+	default:
+		return nil, fmt.Errorf("session prefix %q is ambiguous (%d matches)", sessionID, len(matches))
+	}
 }
 
 func discoverFromIndex(indexPath string) ([]SessionInfo, error) {
@@ -220,11 +238,12 @@ func peekSession(path string) (slug, firstPrompt string) {
 	if err != nil {
 		return "", ""
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
-	// Read first few KB to find user message
+	// Read first few KB to find user message.
+	// Use io.ReadAtLeast to handle slow/partial reads.
 	buf := make([]byte, 32*1024)
-	n, _ := f.Read(buf)
+	n, _ := io.ReadAtLeast(f, buf, 1)
 	if n == 0 {
 		return "", ""
 	}

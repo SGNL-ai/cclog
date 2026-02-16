@@ -1,14 +1,61 @@
 package mcp
 
 import (
-	"strings"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/sgnl-ai/cclog/internal/parser"
-	"github.com/sgnl-ai/cclog/internal/session"
+	"github.com/sgnl-ai/cclog/internal/export"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testSession creates a hermetic test session. Returns (claudeDir, sessionID).
+func testSession(t *testing.T) (string, string) {
+	t.Helper()
+
+	claudeDir := t.TempDir()
+	projectDir := filepath.Join(claudeDir, "-Users-test-projects-myapp")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+
+	sessionID := "deadbeef-1234-5678-abcd-ef0123456789"
+	jsonl := `{"type":"user","sessionId":"` + sessionID + `","uuid":"u1","parentUuid":null,"slug":"test-session","timestamp":"2026-02-14T10:00:00.000Z","message":{"role":"user","content":"Hello world"}}
+{"type":"assistant","sessionId":"` + sessionID + `","uuid":"u2","parentUuid":"u1","timestamp":"2026-02-14T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}]}}
+`
+	jsonlPath := filepath.Join(projectDir, sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(jsonlPath, []byte(jsonl), 0o644))
+
+	type entry struct {
+		SessionID    string `json:"sessionId"`
+		FullPath     string `json:"fullPath"`
+		FirstPrompt  string `json:"firstPrompt"`
+		MessageCount int    `json:"messageCount"`
+		Created      string `json:"created"`
+		Modified     string `json:"modified"`
+		ProjectPath  string `json:"projectPath"`
+	}
+	idx := struct {
+		Version int     `json:"version"`
+		Entries []entry `json:"entries"`
+	}{
+		Version: 1,
+		Entries: []entry{{
+			SessionID:    sessionID,
+			FullPath:     jsonlPath,
+			FirstPrompt:  "Hello world",
+			MessageCount: 2,
+			Created:      "2026-02-14T10:00:00.000Z",
+			Modified:     "2026-02-14T10:00:05.000Z",
+			ProjectPath:  "/Users/test/projects/myapp",
+		}},
+	}
+	data, _ := json.Marshal(idx)
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "sessions-index.json"), data, 0o644))
+
+	return claudeDir, sessionID
+}
 
 func TestNewServer(t *testing.T) {
 	server := NewServer()
@@ -22,203 +69,108 @@ func TestHandleExport_MissingSessionID(t *testing.T) {
 }
 
 func TestHandleExport_NonexistentSession(t *testing.T) {
-	_, err := HandleExport(ExportInput{SessionID: "nonexistent-session-id"})
+	claudeDir, _ := testSession(t)
+	_, err := handleExportWithDir(ExportInput{SessionID: "nonexistent"}, claudeDir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestHandleList_ReturnsResults(t *testing.T) {
-	// This test uses real session data if available
-	result, err := HandleList(ListInput{Limit: 5})
+	claudeDir, _ := testSession(t)
+	result, err := handleListWithDir(ListInput{Limit: 5}, claudeDir)
 	require.NoError(t, err)
 	assert.Contains(t, result, "Found")
 	assert.Contains(t, result, "sessions")
 }
 
-func TestHandleList_WithLimit(t *testing.T) {
-	result, err := HandleList(ListInput{Limit: 2})
+func TestHandleList_DefaultLimit(t *testing.T) {
+	claudeDir, _ := testSession(t)
+	result, err := handleListWithDir(ListInput{Limit: 0}, claudeDir)
 	require.NoError(t, err)
-	assert.Contains(t, result, "showing 2")
+	assert.Contains(t, result, "Found")
 }
 
 func TestHandleList_WithProject(t *testing.T) {
-	// Non-existent project should return empty
-	result, err := HandleList(ListInput{Project: "/nonexistent/path"})
+	claudeDir, _ := testSession(t)
+	result, err := handleListWithDir(ListInput{Project: "/nonexistent/path"}, claudeDir)
 	require.NoError(t, err)
 	assert.Contains(t, result, "showing 0")
 }
 
-func TestApplyTextBoundaries_NoFilter(t *testing.T) {
-	msgs := []parser.Message{
-		{TextContent: "first"},
-		{TextContent: "second"},
-		{TextContent: "third"},
-	}
-
-	result := applyTextBoundaries(msgs, "", "")
-	assert.Len(t, result, 3)
-}
-
-func TestApplyTextBoundaries_FromText(t *testing.T) {
-	msgs := []parser.Message{
-		{TextContent: "first message"},
-		{TextContent: "start here please"},
-		{TextContent: "third message"},
-	}
-
-	result := applyTextBoundaries(msgs, "start here", "")
-	assert.Len(t, result, 2)
-	assert.Equal(t, "start here please", result[0].TextContent)
-}
-
-func TestApplyTextBoundaries_ToText(t *testing.T) {
-	msgs := []parser.Message{
-		{TextContent: "first message"},
-		{TextContent: "stop here please"},
-		{TextContent: "third message"},
-	}
-
-	result := applyTextBoundaries(msgs, "", "stop here")
-	assert.Len(t, result, 2)
-	assert.Equal(t, "first message", result[0].TextContent)
-}
-
-func TestApplyTextBoundaries_CaseInsensitive(t *testing.T) {
-	msgs := []parser.Message{
-		{TextContent: "first"},
-		{TextContent: "START HERE"},
-		{TextContent: "third"},
-	}
-
-	result := applyTextBoundaries(msgs, "start here", "")
-	assert.Len(t, result, 2)
-}
-
-func TestBuildTitle_Summary(t *testing.T) {
-	sess := &session.SessionInfo{Summary: "My Summary"}
-	assert.Equal(t, "My Summary", buildTitle(sess))
-}
-
-func TestBuildTitle_FirstPrompt(t *testing.T) {
-	sess := &session.SessionInfo{FirstPrompt: "Hello world"}
-	assert.Equal(t, "Hello world", buildTitle(sess))
-}
-
-func TestBuildTitle_LongPromptTruncated(t *testing.T) {
-	long := "This is a very long prompt that exceeds sixty characters in length and should be truncated"
-	sess := &session.SessionInfo{FirstPrompt: long}
-	title := buildTitle(sess)
-	assert.Len(t, title, 63) // 60 + "..."
-}
-
-func TestBuildTitle_Slug(t *testing.T) {
-	sess := &session.SessionInfo{Slug: "my-slug"}
-	assert.Equal(t, "my-slug", buildTitle(sess))
-}
-
-func TestBuildTitle_Default(t *testing.T) {
-	sess := &session.SessionInfo{}
-	assert.Equal(t, "Claude Code Session", buildTitle(sess))
-}
-
-func TestHandleExport_RealSession(t *testing.T) {
-	// Find a real session to export
-	result, err := HandleList(ListInput{Limit: 1})
-	require.NoError(t, err)
-
-	// Extract session ID from the list output
-	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Skip("No sessions available for integration test")
-	}
-
-	// Parse the session ID from "- <uuid> | ..."
-	line := lines[2] // first session line after header
-	if !strings.HasPrefix(line, "- ") {
-		t.Skip("Could not parse session list output")
-	}
-	parts := strings.SplitN(line[2:], " | ", 2)
-	sessionID := strings.TrimSpace(parts[0])
-
-	// Export as markdown with --all
+func TestHandleExport_HTML(t *testing.T) {
+	claudeDir, sessionID := testSession(t)
 	outDir := t.TempDir()
-	origOutputDir := outputDir
-	// We can't override outputDir easily, so export to real ~/cclog
-	exported, err := HandleExport(ExportInput{
-		SessionID: sessionID,
-		Format:    "md",
-		All:       true,
-	})
-	require.NoError(t, err)
-	assert.Contains(t, exported, "Exported to")
-	assert.Contains(t, exported, "messages")
-	_ = outDir
-	_ = origOutputDir
-}
 
-func TestHandleExport_HTMLFormat(t *testing.T) {
-	result, err := HandleList(ListInput{Limit: 1})
-	require.NoError(t, err)
-
-	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Skip("No sessions available")
-	}
-
-	line := lines[2]
-	if !strings.HasPrefix(line, "- ") {
-		t.Skip("Could not parse session list")
-	}
-	parts := strings.SplitN(line[2:], " | ", 2)
-	sessionID := strings.TrimSpace(parts[0])
-
-	exported, err := HandleExport(ExportInput{
+	exported, err := handleExportFull(ExportInput{
 		SessionID: sessionID,
 		Format:    "html",
 		All:       true,
-	})
+	}, claudeDir, outDir)
 	require.NoError(t, err)
 	assert.Contains(t, exported, "Exported to")
 	assert.Contains(t, exported, ".html")
+	assert.Contains(t, exported, "messages")
 }
 
-func TestHandleExport_WithTextBoundaries(t *testing.T) {
-	result, err := HandleList(ListInput{Limit: 1})
-	require.NoError(t, err)
+func TestHandleExport_Markdown(t *testing.T) {
+	claudeDir, sessionID := testSession(t)
+	outDir := t.TempDir()
 
-	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Skip("No sessions available")
-	}
-
-	line := lines[2]
-	if !strings.HasPrefix(line, "- ") {
-		t.Skip("Could not parse session list")
-	}
-	parts := strings.SplitN(line[2:], " | ", 2)
-	sessionID := strings.TrimSpace(parts[0])
-
-	// Export with a text boundary that won't match anything — should still work
-	exported, err := HandleExport(ExportInput{
+	exported, err := handleExportFull(ExportInput{
 		SessionID: sessionID,
 		Format:    "md",
-		FromText:  "zzz_nonexistent_text_zzz",
-	})
+		All:       true,
+	}, claudeDir, outDir)
 	require.NoError(t, err)
-	assert.Contains(t, exported, "Exported to")
+	assert.Contains(t, exported, ".md")
 }
 
-func TestApplyTextBoundaries_BothFromAndTo(t *testing.T) {
-	msgs := []parser.Message{
-		{TextContent: "before"},
-		{TextContent: "from here"},
-		{TextContent: "middle"},
-		{TextContent: "to here"},
-		{TextContent: "after"},
+func TestHandleExport_DefaultFormatIsHTML(t *testing.T) {
+	claudeDir, sessionID := testSession(t)
+	outDir := t.TempDir()
+
+	exported, err := handleExportFull(ExportInput{
+		SessionID: sessionID,
+		Format:    "",
+		All:       true,
+	}, claudeDir, outDir)
+	require.NoError(t, err)
+	assert.Contains(t, exported, ".html")
+}
+
+// handleExportWithDir is a test helper that uses an injected claudeDir.
+func handleExportWithDir(input ExportInput, claudeDir string) (string, error) {
+	return handleExportFull(input, claudeDir, "")
+}
+
+// handleExportFull is a test helper with injected claudeDir and outputDir.
+func handleExportFull(input ExportInput, claudeDir, outputDir string) (string, error) {
+	if input.SessionID == "" {
+		return "", nil
 	}
 
-	result := applyTextBoundaries(msgs, "from here", "to here")
-	assert.Len(t, result, 3)
-	assert.Equal(t, "from here", result[0].TextContent)
-	assert.Equal(t, "to here", result[2].TextContent)
+	result, err := export.ExportSession(export.ExportOpts{
+		SessionID: input.SessionID,
+		Format:    input.Format,
+		All:       input.All,
+		FromText:  input.FromText,
+		ToText:    input.ToText,
+		Gist:      input.Gist,
+		ClaudeDir: claudeDir,
+		OutputDir: outputDir,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Exported to %s (%d messages, %d bytes)", result.OutputPath, result.MessageCount, result.ByteCount), nil
+}
+
+// handleListWithDir is a test helper with injected claudeDir.
+func handleListWithDir(input ListInput, claudeDir string) (string, error) {
+	sessions, err := export.ListSessions(claudeDir, input.Project)
+	if err != nil {
+		return "", err
+	}
+	return export.FormatSessionList(sessions, input.Limit), nil
 }
