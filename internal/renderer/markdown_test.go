@@ -117,9 +117,8 @@ func TestRenderMarkdown_MultilineUser(t *testing.T) {
 	require.NoError(t, err)
 
 	md := string(result)
-	assert.Contains(t, md, "07:00:00 line one")
-	assert.Contains(t, md, "         line two")
-	assert.Contains(t, md, "         line three")
+	// Timestamp on first line, content flows naturally.
+	assert.Contains(t, md, "07:00:00 line one\nline two\nline three")
 }
 
 func TestRenderMarkdown_QueueOperationEmpty(t *testing.T) {
@@ -151,6 +150,21 @@ func TestRenderMarkdown_GroupsConsecutiveSameRole(t *testing.T) {
 	assert.Contains(t, md, "07:00:05 First thing.")
 	assert.Contains(t, md, "07:00:10 Second thing.")
 	assert.Contains(t, md, "07:00:15 Third thing.")
+}
+
+func TestRenderMarkdown_CodeBlocksPreserved(t *testing.T) {
+	// Code fences at column 0 should render correctly in GFM.
+	msgs := []parser.Message{
+		{Type: "assistant", Role: "assistant", Timestamp: ts("2026-02-13T07:00:05Z"),
+			TextContent: "Here is code:\n\n```javascript\nconst x = 1;\n```\n\nDone."},
+	}
+
+	result, err := RenderMarkdown(Options{Title: "Test", Messages: msgs})
+	require.NoError(t, err)
+
+	md := string(result)
+	assert.Contains(t, md, "```javascript\nconst x = 1;\n```")
+	assert.Contains(t, md, "Done.")
 }
 
 func TestRenderMarkdown_FullConversation(t *testing.T) {

@@ -17,7 +17,11 @@ import (
 // MaxPromptLen is the standard truncation length for prompt/title display.
 const MaxPromptLen = 60
 
+// maxPromptSearchLen is the max text length per prompt entry in search results.
+const maxPromptSearchLen = 200
+
 // ExportOpts configures an export operation.
+// SessionID accepts a single ID or comma-separated IDs for multi-session export.
 type ExportOpts struct {
 	SessionID  string
 	Format     string // "html" or "md"
@@ -30,6 +34,26 @@ type ExportOpts struct {
 	OutputDir  string // injectable; defaults to ~/cclog
 }
 
+// SearchOpts configures a prompt search operation.
+type SearchOpts struct {
+	ClaudeDir string
+	Project   string
+	Limit     int // max sessions to search (default: 20)
+}
+
+// PromptEntry represents a single user prompt with session metadata.
+type PromptEntry struct {
+	SessionID string
+	Timestamp time.Time
+	Text      string
+}
+
+// SearchResult contains session metadata and their user prompts.
+type SearchResult struct {
+	Sessions []session.SessionInfo
+	Prompts  []PromptEntry
+}
+
 // ExportResult contains the outcome of an export operation.
 type ExportResult struct {
 	OutputPath   string
@@ -39,6 +63,7 @@ type ExportResult struct {
 }
 
 // ExportSession runs the full export pipeline: find → parse → boundary → redact → render → write.
+// SessionID accepts comma-separated IDs for multi-session export.
 func ExportSession(opts ExportOpts) (*ExportResult, error) {
 	claudeDir := opts.ClaudeDir
 	if claudeDir == "" {
@@ -49,18 +74,26 @@ func ExportSession(opts ExportOpts) (*ExportResult, error) {
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	sess, err := session.FindSession(claudeDir, opts.SessionID)
+	// Split comma-separated session IDs.
+	ids := splitSessionIDs(opts.SessionID)
+
+	// Resolve all sessions and collect messages.
+	var allSessions []*session.SessionInfo
+	for _, id := range ids {
+		sess, err := session.FindSession(claudeDir, id)
+		if err != nil {
+			return nil, fmt.Errorf("session %s: %w", id, err)
+		}
+		if sess.FilePath == "" {
+			return nil, fmt.Errorf("session %s has no file path", sess.ID)
+		}
+		allSessions = append(allSessions, sess)
+	}
+
+	// Parse and merge messages from all sessions.
+	messages, err := mergeSessionMessages(allSessions)
 	if err != nil {
 		return nil, err
-	}
-
-	if sess.FilePath == "" {
-		return nil, fmt.Errorf("session %s has no file path", sess.ID)
-	}
-
-	messages, err := parser.ParseFile(sess.FilePath, 0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("parse session: %w", err)
 	}
 
 	// Apply text boundaries (unless --all)
@@ -74,8 +107,9 @@ func ExportSession(opts ExportOpts) (*ExportResult, error) {
 		return nil, fmt.Errorf("secret redaction: %w", err)
 	}
 
-	// Build title
-	title := BuildTitle(sess)
+	// Build title from first session
+	firstSess := allSessions[0]
+	title := BuildTitle(firstSess)
 
 	// Render
 	format := opts.Format
@@ -104,7 +138,7 @@ func ExportSession(opts ExportOpts) (*ExportResult, error) {
 			return nil, fmt.Errorf("resolve output dir: %w", err)
 		}
 	}
-	outPath := outputPath(outDir, sess.Slug, sess.ID, sess.Modified, ext)
+	outPath := outputPath(outDir, firstSess.Slug, firstSess.ID, firstSess.Modified, ext)
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
@@ -129,6 +163,145 @@ func ExportSession(opts ExportOpts) (*ExportResult, error) {
 	}
 
 	return result, nil
+}
+
+// splitSessionIDs parses a comma-separated list of session IDs.
+func splitSessionIDs(s string) []string {
+	parts := strings.Split(s, ",")
+	var ids []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			ids = append(ids, p)
+		}
+	}
+	return ids
+}
+
+// mergeSessionMessages parses messages from multiple sessions and merges them
+// chronologically, inserting session boundary markers between each session.
+func mergeSessionMessages(sessions []*session.SessionInfo) ([]parser.Message, error) {
+	var merged []parser.Message
+
+	for i, sess := range sessions {
+		msgs, err := parser.ParseFile(sess.FilePath, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse session %s: %w", ShortID(sess.ID), err)
+		}
+
+		// Insert a boundary between sessions (not before the first).
+		if i > 0 {
+			merged = append(merged, parser.Message{
+				Type:      "file-history-snapshot",
+				Timestamp: msgs[0].Timestamp,
+			})
+		}
+
+		merged = append(merged, msgs...)
+	}
+
+	return merged, nil
+}
+
+// SearchPrompts returns user prompts across sessions for Claude to reason over.
+func SearchPrompts(opts SearchOpts) (*SearchResult, error) {
+	claudeDir := opts.ClaudeDir
+	if claudeDir == "" {
+		claudeDir = session.DefaultClaudeDir()
+	}
+
+	sessions, err := ListSessions(claudeDir, opts.Project)
+	if err != nil {
+		return nil, err
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > len(sessions) {
+		limit = len(sessions)
+	}
+	sessions = sessions[:limit]
+
+	var prompts []PromptEntry
+	for _, sess := range sessions {
+		if sess.FilePath == "" {
+			continue
+		}
+
+		messages, err := parser.ParseFile(sess.FilePath, 0, 0)
+		if err != nil {
+			continue // skip unparseable sessions
+		}
+
+		for _, msg := range messages {
+			if (msg.Type == "user" || msg.Type == "queue-operation") && msg.TextContent != "" {
+				text := msg.TextContent
+				if len(text) > maxPromptSearchLen {
+					text = text[:maxPromptSearchLen] + "..."
+				}
+				prompts = append(prompts, PromptEntry{
+					SessionID: sess.ID,
+					Timestamp: msg.Timestamp,
+					Text:      text,
+				})
+			}
+		}
+	}
+
+	return &SearchResult{Sessions: sessions, Prompts: prompts}, nil
+}
+
+// FormatPromptSearch formats search results grouped by session for Claude to scan.
+func FormatPromptSearch(result *SearchResult) string {
+	// Build session lookup.
+	sessMap := make(map[string]*session.SessionInfo, len(result.Sessions))
+	for i := range result.Sessions {
+		sessMap[result.Sessions[i].ID] = &result.Sessions[i]
+	}
+
+	// Group prompts by session.
+	type sessionPrompts struct {
+		sess    *session.SessionInfo
+		prompts []PromptEntry
+	}
+	bySession := make(map[string]*sessionPrompts)
+	var order []string
+	for _, p := range result.Prompts {
+		sp, ok := bySession[p.SessionID]
+		if !ok {
+			sp = &sessionPrompts{sess: sessMap[p.SessionID]}
+			bySession[p.SessionID] = sp
+			order = append(order, p.SessionID)
+		}
+		sp.prompts = append(sp.prompts, p)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d user prompts across %d sessions:\n\n", len(result.Prompts), len(order)))
+
+	for _, id := range order {
+		sp := bySession[id]
+		project := filepath.Base(sp.sess.Project)
+		if project == "" || project == "." {
+			project = "-"
+		}
+		summary := TruncatePrompt(sp.sess.FirstPrompt, sp.sess.Summary, MaxPromptLen)
+		sb.WriteString(fmt.Sprintf("Session: %s (%s, %s) %q\n",
+			ShortID(id), sp.sess.Modified.Format("2006-01-02"), project, summary))
+
+		for _, p := range sp.prompts {
+			ts := "         "
+			if !p.Timestamp.IsZero() {
+				ts = p.Timestamp.Format("15:04:05") + " "
+			}
+			sb.WriteString(fmt.Sprintf("  %s[user] %s\n", ts, p.Text))
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }
 
 // ListSessions returns sessions, optionally filtered by project.
@@ -199,16 +372,19 @@ func DefaultOutputDir() (string, error) {
 }
 
 // outputPath computes the full output file path from session metadata.
+// The short session ID is always included to prevent collisions when
+// multiple sessions share the same slug and date.
 func outputPath(outDir, slug, sessionID string, modified time.Time, ext string) string {
-	s := slug
-	if s == "" && len(sessionID) >= 8 {
-		s = sessionID[:8]
+	short := ShortID(sessionID)
+	name := short
+	if slug != "" {
+		name = slug + "-" + short
 	}
 	date := modified.Format("2006-01-02")
 	if date == "0001-01-01" {
 		date = time.Now().Format("2006-01-02")
 	}
-	return filepath.Join(outDir, s+"-"+date+ext)
+	return filepath.Join(outDir, name+"-"+date+ext)
 }
 
 // RedactMessages scans messages for secrets and replaces them with [REDACTED].

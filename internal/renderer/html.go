@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"html"
-	"strings"
 
 	"github.com/sgnl-ai/cclog/internal/parser"
+	"github.com/yuin/goldmark"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 )
 
 // RenderHTML produces a self-contained HTML file with a dark terminal theme.
@@ -54,17 +55,16 @@ func RenderHTML(opts Options) ([]byte, error) {
 }
 
 // writeHTMLEntry writes a single timestamped entry within a message group.
+// Only renders if there is text content; tool calls are handled by writeToolCall.
 func writeHTMLEntry(buf *bytes.Buffer, msg parser.Message) {
-	if msg.TextContent == "" && len(msg.ToolCalls) == 0 {
+	if msg.TextContent == "" {
 		return
 	}
 	buf.WriteString(`  <div class="entry">` + "\n")
 	if !msg.Timestamp.IsZero() {
 		buf.WriteString(`    <span class="timestamp">` + msg.Timestamp.Format("15:04:05") + `</span>` + "\n")
 	}
-	if msg.TextContent != "" {
-		buf.WriteString(`    <div class="content">` + escapeAndFormat(msg.TextContent) + `</div>` + "\n")
-	}
+	buf.WriteString(`    <div class="content">` + renderMarkdownToHTML(msg.TextContent) + `</div>` + "\n")
 	buf.WriteString(`  </div>` + "\n")
 }
 
@@ -81,18 +81,21 @@ func writeToolCall(buf *bytes.Buffer, tc parser.ToolCall, msg parser.Message) {
 	buf.WriteString(`  </div>` + "\n")
 }
 
-func escapeAndFormat(text string) string {
-	escaped := html.EscapeString(text)
-	paragraphs := strings.Split(escaped, "\n\n")
-	var parts []string
-	for _, p := range paragraphs {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			p = strings.ReplaceAll(p, "\n", "<br>\n")
-			parts = append(parts, "<p>"+p+"</p>")
-		}
+// mdRenderer is a goldmark instance configured for safe HTML output.
+var mdRenderer = goldmark.New(
+	goldmark.WithRendererOptions(
+		gmhtml.WithHardWraps(),
+	),
+)
+
+// renderMarkdownToHTML converts Markdown text to HTML using goldmark.
+func renderMarkdownToHTML(text string) string {
+	var buf bytes.Buffer
+	if err := mdRenderer.Convert([]byte(text), &buf); err != nil {
+		// Fallback: escape and wrap in <p>.
+		return "<p>" + html.EscapeString(text) + "</p>"
 	}
-	return strings.Join(parts, "\n")
+	return buf.String()
 }
 
 func htmlHead(title string) string {
@@ -164,6 +167,7 @@ func htmlHead(title string) string {
     font-family: monospace;
     padding-top: 0.15em;
   }
+  .content { line-height: 1.45; min-width: 0; overflow-wrap: break-word; }
   .content p { margin: 0.3em 0; }
   .content code {
     background: rgba(255,255,255,0.08);
@@ -171,6 +175,20 @@ func htmlHead(title string) string {
     border-radius: 3px;
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 0.9em;
+  }
+  .content pre {
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin: 0.5em 0;
+    overflow-x: auto;
+    max-width: 100%%;
+  }
+  .content pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+    line-height: 1.4;
   }
   .tool-call {
     color: var(--tool-color);

@@ -3,7 +3,6 @@ package renderer
 import (
 	"bytes"
 	"fmt"
-	"strings"
 
 	"github.com/sgnl-ai/cclog/internal/parser"
 )
@@ -27,13 +26,11 @@ func RenderMarkdown(opts Options) ([]byte, error) {
 			for _, msg := range g.Messages {
 				writeMarkdownEntry(&buf, msg)
 			}
-			buf.WriteString("\n")
 		case "assistant":
 			buf.WriteString("### Assistant\n\n")
 			for _, msg := range g.Messages {
 				writeMarkdownEntry(&buf, msg)
 			}
-			buf.WriteString("\n")
 		}
 	}
 
@@ -41,21 +38,19 @@ func RenderMarkdown(opts Options) ([]byte, error) {
 }
 
 // writeMarkdownEntry writes a single timestamped message within a group.
+// The timestamp appears on its own line, and the content flows at column 0
+// so that GFM features (code fences, lists, etc.) render correctly.
 func writeMarkdownEntry(buf *bytes.Buffer, msg parser.Message) {
-	ts := "         "
+	if msg.TextContent == "" && len(msg.ToolCalls) == 0 {
+		return
+	}
+
 	if !msg.Timestamp.IsZero() {
-		ts = msg.Timestamp.Format("15:04:05") + " "
+		fmt.Fprintf(buf, "%s ", msg.Timestamp.Format("15:04:05"))
 	}
 
 	if msg.TextContent != "" {
-		lines := strings.Split(msg.TextContent, "\n")
-		for i, line := range lines {
-			prefix := ts
-			if i > 0 {
-				prefix = "         "
-			}
-			buf.WriteString(prefix + line + "\n")
-		}
+		buf.WriteString(msg.TextContent + "\n")
 	}
 
 	for _, tc := range msg.ToolCalls {
@@ -63,7 +58,8 @@ func writeMarkdownEntry(buf *bytes.Buffer, msg parser.Message) {
 		if desc != "" {
 			desc = " — " + desc
 		}
-		fmt.Fprintf(buf, "%s- `%s`%s\n", ts, tc.Name, desc)
-		ts = "         " // only first line gets timestamp
+		fmt.Fprintf(buf, "- `%s`%s\n", tc.Name, desc)
 	}
+
+	buf.WriteString("\n")
 }

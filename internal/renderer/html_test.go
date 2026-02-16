@@ -128,8 +128,8 @@ func TestRenderHTML_HTMLEscaping(t *testing.T) {
 	require.NoError(t, err)
 
 	html := string(result)
-	assert.NotContains(t, html, "<script>")
-	assert.Contains(t, html, "&lt;script&gt;")
+	// Goldmark escapes script tags in its own way.
+	assert.NotContains(t, html, "<script>alert")
 }
 
 func TestRenderHTML_ParagraphBreaks(t *testing.T) {
@@ -170,11 +170,47 @@ func TestRenderHTML_SelfContained(t *testing.T) {
 	assert.Contains(t, html, "</html>")
 }
 
-func TestEscapeAndFormat(t *testing.T) {
-	assert.Equal(t, "<p>hello</p>", escapeAndFormat("hello"))
-	assert.Contains(t, escapeAndFormat("a\n\nb"), "<p>a</p>")
-	assert.Contains(t, escapeAndFormat("a\n\nb"), "<p>b</p>")
-	assert.Contains(t, escapeAndFormat("a\nb"), "<br>")
+func TestRenderHTML_MarkdownFormatting(t *testing.T) {
+	msgs := []parser.Message{
+		{Type: "assistant", Role: "assistant", TextContent: "Use **bold** and `inline code` here."},
+	}
+
+	result, err := RenderHTML(Options{Title: "Test", Messages: msgs})
+	require.NoError(t, err)
+
+	html := string(result)
+	assert.Contains(t, html, "<strong>bold</strong>")
+	assert.Contains(t, html, "<code>inline code</code>")
+}
+
+func TestRenderHTML_CodeBlock(t *testing.T) {
+	input := "before\n```go\nfunc main() {\n  fmt.Println(\"hi\")\n}\n```\nafter"
+	msgs := []parser.Message{
+		{Type: "assistant", Role: "assistant", TextContent: input},
+	}
+
+	result, err := RenderHTML(Options{Title: "Test", Messages: msgs})
+	require.NoError(t, err)
+
+	html := string(result)
+	assert.Contains(t, html, "<pre><code")
+	assert.Contains(t, html, "func main()")
+	assert.Contains(t, html, "</code></pre>")
+	assert.Contains(t, html, "<p>before</p>")
+	assert.Contains(t, html, "<p>after</p>")
+}
+
+func TestRenderHTML_MarkdownList(t *testing.T) {
+	msgs := []parser.Message{
+		{Type: "assistant", Role: "assistant", TextContent: "Things to do:\n\n- First item\n- Second item\n- Third item"},
+	}
+
+	result, err := RenderHTML(Options{Title: "Test", Messages: msgs})
+	require.NoError(t, err)
+
+	html := string(result)
+	assert.Contains(t, html, "<li>First item</li>")
+	assert.Contains(t, html, "<li>Second item</li>")
 }
 
 func TestRenderHTML_QueueOperationEmpty(t *testing.T) {
