@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="clog.png" width="200" alt="cclog">
+</p>
+
 # cclog
 
 [![CI](https://github.com/SGNL-ai/cclog/actions/workflows/ci.yml/badge.svg)](https://github.com/SGNL-ai/cclog/actions/workflows/ci.yml)
