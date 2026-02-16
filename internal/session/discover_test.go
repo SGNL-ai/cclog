@@ -214,6 +214,14 @@ func TestDiscover_NonexistentDir(t *testing.T) {
 	assert.Contains(t, err.Error(), "read claude dir")
 }
 
+func TestIsInternalPrompt(t *testing.T) {
+	assert.True(t, isInternalPrompt("[Request interrupted by user for tool use]"))
+	assert.True(t, isInternalPrompt("<local-command-caveat>Caveat: The messages below"))
+	assert.True(t, isInternalPrompt("<command-name>/fast</command-name>"))
+	assert.False(t, isInternalPrompt("Hello, please help me fix a bug"))
+	assert.False(t, isInternalPrompt(""))
+}
+
 func TestDecodeProjectPath(t *testing.T) {
 	assert.Equal(t, "/Users/erikgustavson/projects/cclog", decodeProjectPath("-Users-erikgustavson-projects-cclog"))
 	assert.Equal(t, "", decodeProjectPath(""))

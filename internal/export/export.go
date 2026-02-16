@@ -281,12 +281,12 @@ func ShortID(id string) string {
 	return id
 }
 
-// TruncatePrompt returns the first non-empty value (prompt or summary),
-// truncated to max characters.
+// TruncatePrompt returns the best available display text for a session.
+// Prefers summary (AI-generated, more descriptive) over firstPrompt.
 func TruncatePrompt(prompt, summary string, max int) string {
-	s := prompt
+	s := summary
 	if s == "" {
-		s = summary
+		s = prompt
 	}
 	if len(s) > max {
 		return s[:max] + "..."
